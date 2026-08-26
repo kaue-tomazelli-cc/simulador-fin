@@ -320,24 +320,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div class="error-msg">Selecione uma opção.</div>
     </div>
 
-    <div class="grid-2">
-      <div class="field" id="f-unidades">
-        <label for="unidades">Quantidade de unidades *</label>
-        <input type="text" inputmode="numeric" id="unidades" placeholder="Ex: 50">
-        <div class="hint">Condomínios com menos de 10 unidades passam por análise do Comitê de Investimentos.</div>
-        <div class="error-msg">Informe um número válido.</div>
-      </div>
-      <div class="field" id="f-canal">
-        <label for="canal">Canal comercial <span style="font-weight:400;color:var(--gray-mid);">(uso interno)</span></label>
-        <select id="canal">
-          <option value="N/A">N/A — cliente direto</option>
-          <option value="Embaixador">Embaixador</option>
-          <option value="ADM">ADM</option>
-          <option value="Campanha Embaixador">Campanha Embaixador</option>
-          <option value="Campanha ADM">Campanha ADM</option>
-        </select>
-        <div class="hint">Define a comissão aplicada na tarifa da operação.</div>
-      </div>
+    <div class="field" id="f-unidades">
+      <label for="unidades">Quantidade de unidades *</label>
+      <input type="text" inputmode="numeric" id="unidades" placeholder="Ex: 50">
+      <div class="hint">Condomínios com menos de 10 unidades passam por análise do Comitê de Investimentos.</div>
+      <div class="error-msg">Informe um número válido.</div>
     </div>
 
     <div class="btn-row">
@@ -443,6 +430,10 @@ const COMISSAO = {
   'Campanha ADM':        {12:0.01,  24:0.01,  36:0.01, 48:0.01, 60:0.01},
 };
 
+// Canal comercial não é mais escolhido no formulário (campo era só de uso
+// interno) — a memória de cálculo sempre usa o canal padrão "cliente direto".
+const CANAL = 'N/A';
+
 /* ==================== DATA LAYER (GTM / ANALYTICS) ==================== */
 const FORM_NAME = 'simulador_financiamento';
 const STEP_NAMES = {1:'voce', 2:'condominio', 3:'simulacao', 4:'resultado'};
@@ -450,6 +441,18 @@ const STEP_NAMES = {1:'voce', 2:'condominio', 3:'simulacao', 4:'resultado'};
 function dlPush(data){
   window.dataLayer = window.dataLayer || [];
   window.dataLayer.push(data);
+}
+
+/* ==================== RASTREIO HUBSPOT (CAPTURA + DROP-OFF) ====================
+   Dispara em segundo plano (fire-and-forget) a cada etapa concluída, para não
+   travar a navegação do usuário caso o HubSpot esteja lento/indisponível.
+   O backend decide o que fazer com cada "stage" (ver api/submit.js). */
+function trackHubspot(stage, payload){
+  fetch('/api/submit', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ stage, ...payload }),
+  }).catch(err => console.error('Falha ao registrar no HubSpot (stage ' + stage + '):', err));
 }
 
 /* ==================== HELPERS DE DATA ==================== */
@@ -683,28 +686,41 @@ function validarStep3(){
 function goToStep(step){
   if(step === 2){
     if(!validarStep1()) return;
+    const nome = document.getElementById('nome').value.trim();
+    const celular = document.getElementById('celular').value.trim();
+    const email = document.getElementById('email').value.trim();
+    const papel = document.getElementById('papel').value;
     dlPush({
       event: 'form_step_submit',
       form_name: FORM_NAME,
       form_step_number: 1,
       form_step_name: STEP_NAMES[1],
-      nome: document.getElementById('nome').value.trim(),
-      celular: document.getElementById('celular').value.trim(),
-      email: document.getElementById('email').value.trim(),
-      papel: document.getElementById('papel').value,
+      nome, celular, email, papel,
     });
+    // Passo 1 concluído: já garante o registro do contato no HubSpot e uma
+    // 1ª ocorrência (parcial) do evento — cobre quem abandona a partir daqui.
+    trackHubspot(1, { nome, celular, email, papel });
   }
   if(step === 3){
     if(!validarStep2()) return;
+    const cnpj = document.getElementById('cnpj').value.trim();
+    const motivo = document.getElementById('motivo').value;
+    const unidades = parseInt(document.getElementById('unidades').value || '0', 10);
     dlPush({
       event: 'form_step_submit',
       form_name: FORM_NAME,
       form_step_number: 2,
       form_step_name: STEP_NAMES[2],
-      cnpj: document.getElementById('cnpj').value.trim(),
-      motivo: document.getElementById('motivo').value,
-      unidades: parseInt(document.getElementById('unidades').value || '0', 10),
-      canal: document.getElementById('canal').value,
+      cnpj, motivo, unidades, canal: CANAL,
+    });
+    // Passo 2 concluído: atualiza o contato e envia uma 2ª ocorrência do
+    // evento, agora com os dados do condomínio também preenchidos.
+    trackHubspot(2, {
+      nome: document.getElementById('nome').value.trim(),
+      celular: document.getElementById('celular').value.trim(),
+      email: document.getElementById('email').value.trim(),
+      papel: document.getElementById('papel').value,
+      cnpj, motivo, unidades,
     });
   }
 
@@ -740,7 +756,7 @@ function simular(){
   const arrecadacao = parseFloat(document.getElementById('arrecadacao').dataset.value);
   const valor = parseFloat(document.getElementById('valor').dataset.value);
   const unidades = parseInt(document.getElementById('unidades').value,10);
-  const canal = document.getElementById('canal').value;
+  const canal = CANAL;
 
   const { resultados, unidadesOk, rgNecessario } = calcularTodos({
     valor, carenciaDias: carenciaSelecionada, canal, unidades, arrecadacao
@@ -758,6 +774,12 @@ function simular(){
     resultados,
     unidadesOk, rgNecessario,
   };
+
+  // Passo 3 concluído: essa é a captura "cheia" — cria/atualiza o contato,
+  // grava a nota detalhada e envia a ocorrência completa do evento no
+  // HubSpot. Acontece sempre que o cálculo é feito, independente de o
+  // usuário clicar em "Tenho interesse" depois.
+  trackHubspot(3, ultimaSimulacao);
 
   document.getElementById('resumo-simulacao').textContent =
     `Financiamento de ${formatBRL(valor)} · carência de ${carenciaSelecionada} dias · taxa de ${formatPct(TAXA_AM)} a.m.`;
@@ -860,7 +882,12 @@ function simular(){
   window.scrollTo({top:0, behavior:'smooth'});
 }
 
-/* ==================== ENVIO PARA O HUBSPOT ==================== */
+/* ==================== CONFIRMAÇÃO DE INTERESSE (HUBSPOT) ====================
+   A captura principal (contato + nota + evento completo) já acontece
+   sozinha em simular() (Passo 3). Este botão é um sinal ADICIONAL e
+   opcional de intenção de compra: acrescenta uma nota de confirmação no
+   contato e envia mais uma ocorrência do evento no HubSpot, para o time
+   comercial identificar quem, além de simular, confirmou interesse. */
 async function enviarInteresse(){
   if(!ultimaSimulacao) return;
   const btn = document.getElementById('btn-interesse');
@@ -874,7 +901,7 @@ async function enviarInteresse(){
     const resp = await fetch('/api/submit', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(ultimaSimulacao),
+      body: JSON.stringify({ stage: 'interesse', ...ultimaSimulacao }),
     });
     const json = await resp.json().catch(()=>({}));
     if(!resp.ok) throw new Error(json.error || 'Falha ao enviar');
