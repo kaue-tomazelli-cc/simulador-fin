@@ -180,16 +180,48 @@ export default async function handler(req, res) {
     return note.id;
   }
 
+  // Cor por status, só pra dar destaque visual rápido pro executivo comercial
+  // ao abrir a nota (o HubSpot renderiza o HTML da hs_note_body).
+  const STATUS_COLOR = {
+    'Elegível': '#1b8a4c',
+    'Inelegível': '#c0392b',
+    'Comitê Investimentos': '#b8860b',
+  };
+
+  function tabelaResultados(resultados) {
+    const linhas = resultados
+      .map((r) => {
+        const cor = STATUS_COLOR[r.status] || '#333';
+        return `<tr>
+          <td style="padding:4px 10px;border:1px solid #ddd;"><strong>${r.n}x</strong></td>
+          <td style="padding:4px 10px;border:1px solid #ddd;">${fmt(r.pmt)}</td>
+          <td style="padding:4px 10px;border:1px solid #ddd;">${pct(r.cetAM)} a.m.</td>
+          <td style="padding:4px 10px;border:1px solid #ddd;">${pct(r.comprometimento, 1)}</td>
+          <td style="padding:4px 10px;border:1px solid #ddd;color:${cor};"><strong>${r.status}</strong></td>
+        </tr>`;
+      })
+      .join('');
+
+    return `<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:6px;">
+      <tr style="background:#f2f2f2;">
+        <th style="padding:4px 10px;border:1px solid #ddd;text-align:left;">Prazo</th>
+        <th style="padding:4px 10px;border:1px solid #ddd;text-align:left;">Parcela</th>
+        <th style="padding:4px 10px;border:1px solid #ddd;text-align:left;">CET</th>
+        <th style="padding:4px 10px;border:1px solid #ddd;text-align:left;">Compromete arrecadação</th>
+        <th style="padding:4px 10px;border:1px solid #ddd;text-align:left;">Status</th>
+      </tr>
+      ${linhas}
+    </table>`;
+  }
+
   function fullNoteBody(data) {
     const resultados = Array.isArray(data.resultados) ? data.resultados : [];
-    const linhasPrazos = resultados
-      .map(
-        (r) =>
-          `${r.n}x — parcela ${fmt(r.pmt)} · CET ${pct(r.cetAM)} a.m. · compromete ${pct(
-            r.comprometimento
-          )} da arrecadação · ${r.status}`
-      )
-      .join('<br>');
+    const recomendado = resultados.find((r) => r.status === 'Elegível') || null;
+    const recomendacaoLinha = recomendado
+      ? `<strong>Prazo recomendado (menor prazo elegível):</strong> ${recomendado.n}x — ${fmt(
+          recomendado.pmt
+        )}/mês<br><br>`
+      : `<strong>Nenhum prazo ficou elegível nas condições informadas.</strong><br><br>`;
 
     return [
       '<strong>Nova simulação — Simulador de Financiamento CondoConta</strong><br><br>',
@@ -201,7 +233,9 @@ export default async function handler(req, res) {
       `<strong>Arrecadação mensal:</strong> ${fmt(data.arrecadacao)}<br>`,
       `<strong>Valor a financiar:</strong> ${fmt(data.valor)}<br>`,
       `<strong>Carência:</strong> ${data.carenciaDias || '-'} dias<br><br>`,
-      `<strong>Resultado da simulação:</strong><br>${linhasPrazos}`,
+      recomendacaoLinha,
+      '<strong>Resultado da simulação (todos os prazos):</strong>',
+      tabelaResultados(resultados),
     ].join('');
   }
 
